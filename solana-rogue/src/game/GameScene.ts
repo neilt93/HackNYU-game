@@ -5,6 +5,7 @@ export default class GameScene extends Phaser.Scene {
   private enemies!: Phaser.Physics.Arcade.Group;
   private keys!: { [key: string]: Phaser.Input.Keyboard.Key };
   private slash!: Phaser.GameObjects.Sprite;
+  private bullets!: Phaser.Physics.Arcade.Group; // Bullet group
   private lastDirection: string = "right"; // Default direction
 
   constructor() {
@@ -24,35 +25,33 @@ export default class GameScene extends Phaser.Scene {
     for (let i = 1; i <= 9; i++) {
         this.load.image(`slash${i}`, `/assets/Pixel Art Animations - Slashes/Slash 1/color1/Frames/Slash_color1_frame${i}.png`);
     }   
+
+    // Bullet image
+    this.load.image("bullet", "/assets/bullet.png");
   }
 
   create() {
-    // Create the tilemap FIRST
+    // Create the tilemap
     const map = this.make.tilemap({ key: "map" });
     const tileset = map.addTilesetImage("Dungeon", "tiles")!;
     
     const groundLayer = map.createLayer("Ground", tileset, 0, 0)!;
     const wallLayer = map.createLayer("Walls", tileset, 0, 0)!;
 
-    // Create the player and enemies AFTER the map
+    // Player setup
     this.player = this.physics.add.sprite(400, 300, "tiles_sprites", 96);
     this.player.setCollideWorldBounds(true);
 
-    // Create enemy group
+    // Enemy group
     this.enemies = this.physics.add.group();
     this.spawnEnemy();
 
-    wallLayer.setCollisionByExclusion([-1]); // Enable collisions on walls
-    this.physics.add.collider(this.player, wallLayer); // Stop player on walls
-    this.physics.add.collider(this.enemies, wallLayer); // Stop player on walls
-
-    // Collision detection
-    this.physics.add.overlap(this.player, this.enemies, (player, enemy) => {
-        this.handlePlayerCollision(player as Phaser.Physics.Arcade.Sprite, enemy as Phaser.Physics.Arcade.Sprite);
+    // Bullet group
+    this.bullets = this.physics.add.group({
+      defaultKey: "bullet",
+      maxSize: 10,
+      runChildUpdate: true
     });
-
-    // Ensure sprites are above the tilemap
-    this.player.setDepth(10);
 
     // Slash should be a physics sprite to have a body
     this.slash = this.physics.add.sprite(0, 0, "slash1").setVisible(false);
@@ -62,39 +61,53 @@ export default class GameScene extends Phaser.Scene {
     this.slash.setActive(false);
     (this.slash.body as Phaser.Physics.Arcade.Body).setImmovable(true); // Prevents movement
 
-
     // Slash Animation
     this.anims.create({
-        key: "slash_anim",
-        frames: [
-            { key: "slash1" },
-            { key: "slash2" },
-            { key: "slash3" },
-            { key: "slash4" },
-            { key: "slash5" },
-            { key: "slash6" },
-            { key: "slash7" },
-            { key: "slash8" },
-            { key: "slash9" }
-        ],
-        frameRate: 20,
-        repeat: 0
+      key: "slash_anim",
+      frames: [
+        { key: "slash1" }, { key: "slash2" }, { key: "slash3" }, { key: "slash4" },
+        { key: "slash5" }, { key: "slash6" }, { key: "slash7" }, { key: "slash8" },
+        { key: "slash9" }
+      ],
+      frameRate: 20,
+      repeat: 0
     });
 
-    // Set up keyboard input
+    wallLayer.setCollisionByExclusion([-1]);
+    this.physics.add.collider(this.player, wallLayer);
+    this.physics.add.collider(this.enemies, wallLayer);
+
+    // Bullet and enemy collision
+    this.physics.add.overlap(
+        this.bullets,
+        this.enemies,
+        (bullet, enemy) => this.handleBulletHit(bullet as Phaser.Physics.Arcade.Sprite, enemy as Phaser.Physics.Arcade.Sprite),
+        undefined,
+        this
+    );
+
+    this.physics.add.overlap(
+        this.slash,
+        this.enemies,
+        (slash, enemy) => this.handleBulletHit(slash as Phaser.Physics.Arcade.Sprite, enemy as Phaser.Physics.Arcade.Sprite),
+        undefined,
+        this
+    );
+
+    // Keyboard input
     this.keys = {
-        W: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
-        A: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
-        S: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
-        D: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
-        SPACE: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
+      W: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
+      A: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
+      S: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
+      D: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
+      SPACE: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE),
+      F: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.F),
     };
 
-    // Bind Slash Attack
-    this.keys.SPACE.on("down", () => {
-        this.performSlash();
-    });
-}
+    // Bind Slash and Shooting
+    this.keys.SPACE.on("down", () => this.performSlash());
+    this.keys.F.on("down", () => this.shootBullet());
+  }
 
 
   update() {
@@ -164,49 +177,126 @@ export default class GameScene extends Phaser.Scene {
     }
 }
 
-performSlash() {
-    if (!this.slash) return; // Ensure slash exists
+private isSlashing: boolean = false; // Track if a slash is active
 
-    this.slash.setVisible(true);
-    this.slash.setActive(true);
-    
-    let angle = 0; 
+performSlash() {
+    if (this.isSlashing) return; // Prevent multiple slashes at once
+    this.isSlashing = true;
+
+    let slash = this.physics.add.sprite(this.player.x, this.player.y, "slash1");
+    slash.setDepth(15);
+    slash.setOrigin(0.5, 0.5);
+    slash.setSize(16, 16);
+
+    let angle = 0;
 
     switch (this.lastDirection) {
         case "up":
+            slash.setPosition(this.player.x, this.player.y - 16);
             angle = -90;
-            this.slash.setPosition(this.player.x, this.player.y - 16);
             break;
         case "down":
+            slash.setPosition(this.player.x, this.player.y + 16);
             angle = 90;
-            this.slash.setPosition(this.player.x, this.player.y + 16);
             break;
         case "left":
+            slash.setPosition(this.player.x - 16, this.player.y);
             angle = 180;
-            this.slash.setPosition(this.player.x - 16, this.player.y);
             break;
         case "right":
         default:
+            slash.setPosition(this.player.x + 16, this.player.y);
             angle = 0;
-            this.slash.setPosition(this.player.x + 16, this.player.y);
             break;
     }
 
-    this.slash.setAngle(angle);
-    this.slash.play("slash_anim");
+    slash.setAngle(angle);
 
-    // Enable collisions while slash is active
-    this.physics.add.overlap(this.slash, this.enemies, (slash, enemy) => {
+    // Play slash animation (ensure it exists)
+    if (this.anims.exists("slash_anim")) {
+        slash.play("slash_anim");
+    } else {
+        console.error("Slash animation missing!");
+    }
+
+    // Check for enemy hits while the slash is active
+    this.physics.add.overlap(slash, this.enemies, (slashObj, enemy) => {
         let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
         enemySprite.destroy();
         console.log("Enemy hit!");
+
+        // Respawn an enemy after a delay
+        this.time.delayedCall(1000, () => {
+            this.spawnEnemy();
+        });
     });
 
-    // Hide the slash after animation
-    this.time.delayedCall(450, () => {
-        this.slash.setVisible(false);
-        this.slash.setActive(false);
+    // Destroy the slash after the animation finishes and reset isSlashing
+    slash.on("animationcomplete", () => {
+        slash.destroy();
+        this.isSlashing = false; // Allow new slashes
+    });
+
+    // Safety reset in case animationcomplete doesn't trigger
+    this.time.delayedCall(500, () => {
+        if (slash.active) {
+            slash.destroy();
+        }
+        this.isSlashing = false; // Reset slashing state
     });
 }
+
+
+
+
+handleBulletHit(bullet: Phaser.GameObjects.GameObject, enemy: Phaser.GameObjects.GameObject) {
+    bullet.destroy();
+    enemy.destroy();
+    console.log("Enemy shot!");
+
+    this.time.delayedCall(1000, () => {
+      this.spawnEnemy();
+    });
+  }
+
+  shootBullet() {
+    let bullet = this.bullets.get(this.player.x, this.player.y, "bullet");
+
+    if (!bullet) return;
+
+    bullet.setActive(true);
+    bullet.setVisible(true);
+    bullet.setScale(0.1);
+
+    let velocityX = 0;
+    let velocityY = 0;
+
+    switch (this.lastDirection) {
+      case "up":
+        velocityY = -300;
+        bullet.setPosition(this.player.x, this.player.y - 16);
+        break;
+      case "down":
+        velocityY = 300;
+        bullet.setPosition(this.player.x, this.player.y + 16);
+        break;
+      case "left":
+        velocityX = -300;
+        bullet.setPosition(this.player.x - 16, this.player.y);
+        break;
+      case "right":
+      default:
+        velocityX = 300;
+        bullet.setPosition(this.player.x + 16, this.player.y);
+        break;
+    }
+
+    bullet.setVelocity(velocityX, velocityY);
+
+    // Destroy bullet after 1000ms
+    this.time.delayedCall(1000, () => {
+      bullet.destroy();
+    });
+  }
 
 }
