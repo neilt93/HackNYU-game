@@ -14,10 +14,9 @@ export default class GameScene extends Phaser.Scene {
     private maxEnemyHealth = 20;
     private score: number = 0;
     private scoreText!: Phaser.GameObjects.Text;
-    private knockbackStrength = 10000; // Knockback speed when hit
-    private knockbackDuration = 10000; // How long the enemy is pushed (ms)
-
-
+    private knockbackStrength = 250; // Knockback speed when hit
+    private knockbackDuration = 200; // How long the enemy is pushed (ms)
+    private coins!: Phaser.Physics.Arcade.Group;
 
     constructor() {
         super({ key: "GameScene" });
@@ -31,6 +30,12 @@ export default class GameScene extends Phaser.Scene {
             frameHeight: 16,
             spacing: 1,
         });
+
+        this.load.spritesheet("coin", "/assets/coin1_16x16.png", {
+            frameWidth: 16, // Frame size for each coin
+            frameHeight: 16,
+        });
+
 
         // Green slash
         for (let i = 1; i <= 9; i++) {
@@ -86,6 +91,20 @@ export default class GameScene extends Phaser.Scene {
             frameRate: 20,
             repeat: 0
         });
+
+        // Coin
+        this.coins = this.physics.add.group({
+            defaultKey: "coin"
+        });
+
+        // Coin animation
+        this.anims.create({
+            key: "coin_spin",
+            frames: this.anims.generateFrameNumbers("coin", { start: 0, end: 15 }), 
+            frameRate: 10,
+            repeat: -1
+        });        
+
 
         wallLayer.setCollisionByExclusion([-1]);
         this.physics.add.collider(this.player, wallLayer);
@@ -198,7 +217,8 @@ export default class GameScene extends Phaser.Scene {
                 enemySprite.destroy();
                 enemyHealthBar.destroy();
                 this.enemyHealth.delete(enemySprite);
-                this.updateScore(100); // 🔥 Score only increases on enemy death
+                this.updateScore(100); // Score only increases on enemy death
+                this.dropCoin(enemy.x, enemy.y); // Drop a coin
             } else {
                 this.updateEnemyHealthBar(enemySprite, enemyHealthBar, newHealth);
             }
@@ -295,7 +315,7 @@ export default class GameScene extends Phaser.Scene {
         let enemyHealthBar = this.enemyHealth.get(enemy);
         if (!enemyHealthBar) return;
 
-        if (enemy.getData("isInvincible")) return; // 🔥 Prevent invincible enemies from taking damage
+        if (enemy.getData("isInvincible")) return; // Prevent invincible enemies from taking damage
 
         let currentHealth = enemy.getData("health") || this.maxEnemyHealth;
         let newHealth = currentHealth - 5;
@@ -304,10 +324,11 @@ export default class GameScene extends Phaser.Scene {
         console.log(`Enemy hit! New Health: ${newHealth}`);
 
         if (newHealth <= 0) {
+            this.dropCoin(enemy); // Drop a coin before destroying
             enemy.destroy();
             enemyHealthBar.destroy();
             this.enemyHealth.delete(enemy);
-            this.updateScore(100); // ✅ Add points on kill
+            this.updateScore(100); // Add points on kill
         } else {
             this.updateEnemyHealthBar(enemy, enemyHealthBar, newHealth);
 
@@ -324,47 +345,68 @@ export default class GameScene extends Phaser.Scene {
 
     applyKnockback(enemy: Phaser.Physics.Arcade.Sprite, attackDirection: string) {
         if (!enemy.active || !enemy.body) return;
-
-        const knockbackDistance = 50; // How far enemy is pushed back
-        const knockbackDuration = 300; // Duration of knockback effect
-        let knockbackX = enemy.x;
-        let knockbackY = enemy.y;
-
+    
+        let velocityX = 0, velocityY = 0;
+    
         switch (attackDirection) {
             case "up":
-                knockbackY -= knockbackDistance;
+                velocityY = -this.knockbackStrength;
                 break;
             case "down":
-                knockbackY += knockbackDistance;
+                velocityY = this.knockbackStrength;
                 break;
             case "left":
-                knockbackX -= knockbackDistance;
+                velocityX = -this.knockbackStrength;
                 break;
             case "right":
             default:
-                knockbackX += knockbackDistance;
+                velocityX = this.knockbackStrength;
                 break;
         }
-
-        // 🔥 Disable movement and apply knockback
+    
         enemy.setData("isKnockedBack", true);
-
-        this.tweens.add({
-            targets: enemy,
-            x: knockbackX,
-            y: knockbackY,
-            ease: "Power2", // Smooth easing effect
-            duration: knockbackDuration,
-            onComplete: () => {
-                if (enemy.active) {
-                    enemy.setData("isKnockedBack", false); // 🔥 Re-enable movement
-                }
-            },
+        enemy.setVelocity(velocityX, velocityY);
+    
+        this.time.delayedCall(this.knockbackDuration, () => {
+            if (enemy.active && enemy.body) {
+                enemy.setVelocity(0, 0);
+                enemy.setData("isKnockedBack", false);
+            }
         });
     }
+    
+    // Drop a coin 
+    dropCoin(enemy: Phaser.Physics.Arcade.Sprite) {
+        if (!enemy.active) return;
+    
+        let coin = this.coins.create(enemy.x, enemy.y, "coin") as Phaser.Physics.Arcade.Sprite;
+        if (!coin) return;
+    
+        coin.setScale(1);
+        coin.setDepth(5);
+        coin.play("coin_spin");
+    
+        this.physics.add.overlap(this.player, coin, (player, coinObj) => {
+            this.collectCoin(coinObj as Phaser.Physics.Arcade.Sprite);
+        });
+    
+        // Destroy coin after 10 seconds if not collected**
+        this.time.delayedCall(10000, () => {
+            if (coin.active) {
+                coin.destroy();
+            }
+        });
+    
+        console.log("Coin dropped at:", enemy.x, enemy.y);
+    }
+    
 
-
-
+    // Collect a coin
+    collectCoin(coin: Phaser.Physics.Arcade.Sprite) {
+        coin.destroy();
+        this.updateScore(50);
+    }
+    
 
     handleBulletWallCollision(bullet: Phaser.GameObjects.GameObject) {
         let bulletSprite = bullet as Phaser.Physics.Arcade.Sprite;
@@ -378,12 +420,12 @@ export default class GameScene extends Phaser.Scene {
     performSlash() {
         if (this.isSlashing) return; // Prevent multiple slashes at once
         this.isSlashing = true;
-    
+
         let slash = this.physics.add.sprite(this.player.x, this.player.y, "slash1");
         slash.setDepth(15);
         slash.setOrigin(0.5, 0.5);
         slash.body.setSize(50, 50); // Increase hitbox size
-    
+
         let angle = 0;
         switch (this.lastDirection) {
             case "up":
@@ -405,22 +447,22 @@ export default class GameScene extends Phaser.Scene {
                 break;
         }
         slash.setAngle(angle);
-    
+
         // ✅ Play animation dynamically
         slash.play("slash_anim");
-    
+
         // ✅ **Now we create the overlap here (DYNAMICALLY)**
         this.physics.add.overlap(slash, this.enemies, (slashObj, enemy) => {
             let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
             this.handleEnemyHit(enemySprite, this.lastDirection);
         });
-    
+
         // ✅ Destroy slash after animation completes
         slash.on("animationcomplete", () => {
             slash.destroy();
             this.isSlashing = false;
         });
-    
+
         // Safety check in case animationcomplete doesn’t trigger
         this.time.delayedCall(500, () => {
             if (slash.active) {
@@ -428,7 +470,7 @@ export default class GameScene extends Phaser.Scene {
             }
             this.isSlashing = false;
         });
-    }    
+    }
 
     handleBulletHit(bullet: Phaser.GameObjects.GameObject, enemy: Phaser.GameObjects.GameObject) {
         let bulletSprite = bullet as Phaser.Physics.Arcade.Sprite;
