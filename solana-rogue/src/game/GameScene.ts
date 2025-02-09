@@ -12,6 +12,10 @@ export default class GameScene extends Phaser.Scene {
     private playerHealthBar!: Phaser.GameObjects.Graphics;
     private enemyHealth: Map<Phaser.Physics.Arcade.Sprite, Phaser.GameObjects.Graphics> = new Map();
     private maxEnemyHealth = 20;
+    private score: number = 0;
+    private scoreText!: Phaser.GameObjects.Text;
+    private knockbackStrength = 10000; // Knockback speed when hit
+    private knockbackDuration = 10000; // How long the enemy is pushed (ms)
 
 
 
@@ -36,6 +40,9 @@ export default class GameScene extends Phaser.Scene {
         // Bullet image
         this.load.image("bullet", "/assets/bullet.png");
     }
+
+    private enemySpawnRate = 2000; // 🔥 Time between enemy spawns (3 seconds)
+    private maxEnemies = 10; // 🔥 Limit the max enemies at once
 
     create() {
         // Create the tilemap
@@ -64,7 +71,7 @@ export default class GameScene extends Phaser.Scene {
         this.slash = this.physics.add.sprite(0, 0, "slash1").setVisible(false);
         this.slash.setDepth(15);
         this.slash.setOrigin(0.5, 0.5);
-        this.slash.setSize(16, 16);  // Set hitbox size
+        this.slash.setSize(50, 50); // Adjust this to your needs
         this.slash.setActive(false);
         (this.slash.body as Phaser.Physics.Arcade.Body).setImmovable(true); // Prevents movement
 
@@ -94,7 +101,6 @@ export default class GameScene extends Phaser.Scene {
             this
         );
 
-
         // Bullet and enemy collision
         this.physics.add.overlap(
             this.bullets,
@@ -116,6 +122,14 @@ export default class GameScene extends Phaser.Scene {
         // Health bar
         this.createPlayerHealthBar();
 
+        // Score
+        this.scoreText = this.add.text(10, 30, `Score: ${this.score}`, {
+            fontSize: "16px",
+            color: "#ffffff",
+            backgroundColor: "#000000",
+            padding: { x: 5, y: 2 }
+        });
+        this.scoreText.setScrollFactor(0); // Keep it fixed on screen
 
         // Keyboard input
         this.keys = {
@@ -130,6 +144,14 @@ export default class GameScene extends Phaser.Scene {
         // Bind Slash and Shooting
         this.keys.SPACE.on("down", () => this.performSlash());
         this.keys.F.on("down", () => this.shootBullet());
+
+        // Automatically spawn enemies at a fixed interval
+        this.time.addEvent({
+            delay: this.enemySpawnRate,
+            callback: this.spawnEnemy,
+            callbackScope: this,
+            loop: true // ✅ Ensures continuous spawning
+        });
     }
 
 
@@ -169,22 +191,32 @@ export default class GameScene extends Phaser.Scene {
 
             if (!enemyHealthBar) return;
 
-            let newHealth = (enemySprite.getData("health") || this.maxEnemyHealth) - 1; // Reduce health
+            let newHealth = (enemySprite.getData("health") || this.maxEnemyHealth) - 8; // Reduce health
             enemySprite.setData("health", newHealth);
 
             if (newHealth <= 0) {
                 enemySprite.destroy();
                 enemyHealthBar.destroy();
                 this.enemyHealth.delete(enemySprite);
+                this.updateScore(100); // 🔥 Score only increases on enemy death
             } else {
                 this.updateEnemyHealthBar(enemySprite, enemyHealthBar, newHealth);
             }
         });
 
-        // Update health bars of enemies
+        // Update enemies
         this.enemies.getChildren().forEach((enemy) => {
             let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
-            this.physics.moveToObject(enemySprite, this.player, 100);
+
+            // Ensure enemy is still active and has a body
+            if (!enemySprite.active || !enemySprite.body) {
+                return;
+            }
+
+            // Ensure enemy only moves if NOT knocked back
+            if (!enemySprite.getData("isKnockedBack")) {
+                this.physics.moveToObject(enemySprite, this.player, 100);
+            }
 
             let healthBar = this.enemyHealth.get(enemySprite);
             if (healthBar) {
@@ -197,6 +229,8 @@ export default class GameScene extends Phaser.Scene {
     }
 
     spawnEnemy() {
+        if (this.enemies.getChildren().length >= this.maxEnemies) return; // ✅ Prevents too many enemies
+
         let enemy = this.enemies.create(
             Phaser.Math.Between(50, 750),
             Phaser.Math.Between(50, 550),
@@ -205,13 +239,15 @@ export default class GameScene extends Phaser.Scene {
         ) as Phaser.Physics.Arcade.Sprite;
 
         enemy.setScale(1);
-        enemy.setData("health", this.maxEnemyHealth); // Store enemy health data
+        enemy.setData("health", this.maxEnemyHealth); // ✅ Track enemy health
 
+        // Create health bar graphics
         let healthBar = this.add.graphics();
         this.updateEnemyHealthBar(enemy, healthBar, this.maxEnemyHealth);
 
         this.enemyHealth.set(enemy, healthBar);
     }
+
 
 
     // Player collision
@@ -255,20 +291,81 @@ export default class GameScene extends Phaser.Scene {
         });
     }
 
+    handleEnemyHit(enemy: Phaser.Physics.Arcade.Sprite, attackDirection: string) {
+        let enemyHealthBar = this.enemyHealth.get(enemy);
+        if (!enemyHealthBar) return;
 
+        if (enemy.getData("isInvincible")) return; // 🔥 Prevent invincible enemies from taking damage
 
+        let currentHealth = enemy.getData("health") || this.maxEnemyHealth;
+        let newHealth = currentHealth - 5;
+        enemy.setData("health", newHealth);
 
-    handleEnemyHit(enemy: Phaser.Physics.Arcade.Sprite) {
-        if (this.slash.visible) {
-            console.log("Enemy hit!");
+        console.log(`Enemy hit! New Health: ${newHealth}`);
+
+        if (newHealth <= 0) {
             enemy.destroy();
+            enemyHealthBar.destroy();
+            this.enemyHealth.delete(enemy);
+            this.updateScore(100); // ✅ Add points on kill
+        } else {
+            this.updateEnemyHealthBar(enemy, enemyHealthBar, newHealth);
 
-            // Respawn enemy after 1 second
-            this.time.delayedCall(1000, () => {
-                this.spawnEnemy();
+            enemy.setData("isInvincible", true);
+            this.time.delayedCall(50, () => { // Invincibility time
+                enemy.setData("isInvincible", false);
             });
+
+            // **🔥 Apply Knockback**
+            this.applyKnockback(enemy, attackDirection);
         }
     }
+
+
+    applyKnockback(enemy: Phaser.Physics.Arcade.Sprite, attackDirection: string) {
+        if (!enemy.active || !enemy.body) return;
+
+        const knockbackDistance = 50; // How far enemy is pushed back
+        const knockbackDuration = 300; // Duration of knockback effect
+        let knockbackX = enemy.x;
+        let knockbackY = enemy.y;
+
+        switch (attackDirection) {
+            case "up":
+                knockbackY -= knockbackDistance;
+                break;
+            case "down":
+                knockbackY += knockbackDistance;
+                break;
+            case "left":
+                knockbackX -= knockbackDistance;
+                break;
+            case "right":
+            default:
+                knockbackX += knockbackDistance;
+                break;
+        }
+
+        // 🔥 Disable movement and apply knockback
+        enemy.setData("isKnockedBack", true);
+
+        this.tweens.add({
+            targets: enemy,
+            x: knockbackX,
+            y: knockbackY,
+            ease: "Power2", // Smooth easing effect
+            duration: knockbackDuration,
+            onComplete: () => {
+                if (enemy.active) {
+                    enemy.setData("isKnockedBack", false); // 🔥 Re-enable movement
+                }
+            },
+        });
+    }
+
+
+
+
     handleBulletWallCollision(bullet: Phaser.GameObjects.GameObject) {
         let bulletSprite = bullet as Phaser.Physics.Arcade.Sprite;
         bulletSprite.destroy(); // Destroy bullet upon hitting the wall
@@ -281,14 +378,13 @@ export default class GameScene extends Phaser.Scene {
     performSlash() {
         if (this.isSlashing) return; // Prevent multiple slashes at once
         this.isSlashing = true;
-
+    
         let slash = this.physics.add.sprite(this.player.x, this.player.y, "slash1");
         slash.setDepth(15);
         slash.setOrigin(0.5, 0.5);
-        slash.setSize(16, 16);
-
+        slash.body.setSize(50, 50); // Increase hitbox size
+    
         let angle = 0;
-
         switch (this.lastDirection) {
             case "up":
                 slash.setPosition(this.player.x, this.player.y - 16);
@@ -308,73 +404,68 @@ export default class GameScene extends Phaser.Scene {
                 angle = 0;
                 break;
         }
-
         slash.setAngle(angle);
-
-        // Play slash animation (ensure it exists)
-        if (this.anims.exists("slash_anim")) {
-            slash.play("slash_anim");
-        } else {
-            console.error("Slash animation missing!");
-        }
-
+    
+        // ✅ Play animation dynamically
+        slash.play("slash_anim");
+    
+        // ✅ **Now we create the overlap here (DYNAMICALLY)**
         this.physics.add.overlap(slash, this.enemies, (slashObj, enemy) => {
             let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
-            let enemyHealthBar = this.enemyHealth.get(enemySprite);
-
-            if (!enemyHealthBar) return;
-
-            // 🔥 Get current enemy health
-            let currentHealth = enemySprite.getData("health") || this.maxEnemyHealth;
-
-            // 🔥 Reduce enemy health by 1
-            let newHealth = currentHealth - 1;
-            enemySprite.setData("health", newHealth);
-
-            console.log(`Enemy hit! New Health: ${newHealth}`);
-
-            if (newHealth <= 0) {
-                // 🔥 Destroy enemy and health bar
-                enemySprite.destroy();
-                enemyHealthBar.destroy();
-                this.enemyHealth.delete(enemySprite);
-
-                // ✅ Respawn enemy after 1 second
-                this.time.delayedCall(1000, () => {
-                    this.spawnEnemy();
-                });
-            } else {
-                // 🔥 Update enemy health bar
-                this.updateEnemyHealthBar(enemySprite, enemyHealthBar, newHealth);
-            }
+            this.handleEnemyHit(enemySprite, this.lastDirection);
         });
-
-
-
-        // Destroy the slash after the animation finishes and reset isSlashing
+    
+        // ✅ Destroy slash after animation completes
         slash.on("animationcomplete", () => {
             slash.destroy();
-            this.isSlashing = false; // Allow new slashes
+            this.isSlashing = false;
         });
-
-        // Safety reset in case animationcomplete doesn't trigger
+    
+        // Safety check in case animationcomplete doesn’t trigger
         this.time.delayedCall(500, () => {
             if (slash.active) {
                 slash.destroy();
             }
-            this.isSlashing = false; // Reset slashing state
+            this.isSlashing = false;
         });
-    }
+    }    
 
     handleBulletHit(bullet: Phaser.GameObjects.GameObject, enemy: Phaser.GameObjects.GameObject) {
-        bullet.destroy();
-        enemy.destroy();
-        console.log("Enemy shot!");
+        let bulletSprite = bullet as Phaser.Physics.Arcade.Sprite;
+        let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
+        let enemyHealthBar = this.enemyHealth.get(enemySprite);
 
-        this.time.delayedCall(1000, () => {
-            this.spawnEnemy();
-        });
+        bulletSprite.destroy(); // Remove the bullet after hitting
+
+        if (!enemyHealthBar) return; // Ensure enemy has a health bar
+
+        // 🔥 Get enemy's current health
+        let currentHealth = enemySprite.getData("health") || this.maxEnemyHealth;
+
+        // 🔥 Reduce health
+        let newHealth = currentHealth - 5;
+        enemySprite.setData("health", newHealth);
+
+        console.log(`Bullet hit! Enemy Health: ${newHealth}`);
+
+        if (newHealth <= 0) {
+            // 🔥 Destroy enemy and health bar
+            enemySprite.destroy();
+            enemyHealthBar.destroy();
+            this.enemyHealth.delete(enemySprite);
+            this.updateScore(100); // Score only increases on enemy death
+
+            // Respawn after delay
+            this.time.delayedCall(1000, () => {
+                this.spawnEnemy();
+            });
+
+        } else {
+            // 🔥 Update enemy health bar
+            this.updateEnemyHealthBar(enemySprite, enemyHealthBar, newHealth);
+        }
     }
+
 
     shootBullet() {
         let bullet = this.bullets.get(this.player.x, this.player.y, "bullet");
@@ -449,6 +540,12 @@ export default class GameScene extends Phaser.Scene {
 
         healthBar.fillStyle(0xff0000, 1);
         healthBar.fillRect(enemy.x - 10, enemy.y - 15, (health / this.maxEnemyHealth) * 20, 4);
+    }
+
+    // Modify score
+    updateScore(amount: number) {
+        this.score += amount; // Increase score
+        this.scoreText.setText(`Score: ${this.score}`); // Update UI
     }
 
 
