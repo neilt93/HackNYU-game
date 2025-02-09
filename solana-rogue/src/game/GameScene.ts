@@ -93,7 +93,7 @@ export default class GameScene extends Phaser.Scene {
             undefined,
             this
         );
-        
+
 
         // Bullet and enemy collision
         this.physics.add.overlap(
@@ -103,7 +103,7 @@ export default class GameScene extends Phaser.Scene {
             undefined,
             this
         );
-        
+
         // Slash and enemy collision
         this.physics.add.overlap(
             this.slash,
@@ -215,36 +215,48 @@ export default class GameScene extends Phaser.Scene {
 
 
     // Player collision
-    handlePlayerCollision(player: Phaser.GameObjects.GameObject, enemy: Phaser.GameObjects.GameObject) {
+    private isInvincible: boolean = false; // Track invincibility state
+
+    handlePlayerCollision(
+        player: Phaser.GameObjects.GameObject | Phaser.Physics.Arcade.Sprite,
+        enemy: Phaser.GameObjects.GameObject | Phaser.Physics.Arcade.Sprite
+    ) {
         const playerSprite = player as Phaser.Physics.Arcade.Sprite;
         const enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
-    
+
+        if (this.isInvincible) return; // 🔥 Skip damage if invincible
+
         // 🔥 Reduce player health
         this.playerHealth -= 1;
         console.log(`Player hit! Health: ${this.playerHealth}`);
-    
+
         // 🔥 Update health bar
         this.updatePlayerHealthBar();
-    
+
         // ✅ If player health reaches 0, trigger game over
         if (this.playerHealth <= 0) {
             console.log("Game Over!");
             this.scene.restart(); // Reset the game
+            return;
         }
-    
-        // Optional: Knock player back slightly on hit
+
+        // 🔥 Activate Invincibility
+        this.isInvincible = true;
         this.tweens.add({
             targets: playerSprite,
-            alpha: 0,
+            alpha: 0.2,
             duration: 100,
             yoyo: true,
-            repeat: 3,
+            repeat: 1,
             onComplete: () => {
                 playerSprite.setAlpha(1);
+                this.isInvincible = false; // ✅ Reset invincibility
             }
         });
     }
-    
+
+
+
 
     handleEnemyHit(enemy: Phaser.Physics.Arcade.Sprite) {
         if (this.slash.visible) {
@@ -306,27 +318,27 @@ export default class GameScene extends Phaser.Scene {
             console.error("Slash animation missing!");
         }
 
-        this.physics.add.overlap(slash, this.enemies, (slashObj, enemy) => { 
+        this.physics.add.overlap(slash, this.enemies, (slashObj, enemy) => {
             let enemySprite = enemy as Phaser.Physics.Arcade.Sprite;
             let enemyHealthBar = this.enemyHealth.get(enemySprite);
-        
+
             if (!enemyHealthBar) return;
-        
+
             // 🔥 Get current enemy health
             let currentHealth = enemySprite.getData("health") || this.maxEnemyHealth;
-        
+
             // 🔥 Reduce enemy health by 1
             let newHealth = currentHealth - 1;
             enemySprite.setData("health", newHealth);
-        
+
             console.log(`Enemy hit! New Health: ${newHealth}`);
-        
+
             if (newHealth <= 0) {
                 // 🔥 Destroy enemy and health bar
                 enemySprite.destroy();
                 enemyHealthBar.destroy();
                 this.enemyHealth.delete(enemySprite);
-        
+
                 // ✅ Respawn enemy after 1 second
                 this.time.delayedCall(1000, () => {
                     this.spawnEnemy();
@@ -336,7 +348,7 @@ export default class GameScene extends Phaser.Scene {
                 this.updateEnemyHealthBar(enemySprite, enemyHealthBar, newHealth);
             }
         });
-        
+
 
 
         // Destroy the slash after the animation finishes and reset isSlashing
