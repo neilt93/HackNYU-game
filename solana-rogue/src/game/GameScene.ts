@@ -1,4 +1,6 @@
 import Phaser from "phaser";
+import { connectWallet, getWalletPublicKey, getWalletBalance, sendScoreToSolana } from "../utils/solana";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 
 export default class GameScene extends Phaser.Scene {
     private player!: Phaser.Physics.Arcade.Sprite;
@@ -17,6 +19,13 @@ export default class GameScene extends Phaser.Scene {
     private knockbackStrength = 250; // Knockback speed when hit
     private knockbackDuration = 200; // How long the enemy is pushed (ms)
     private coins!: Phaser.Physics.Arcade.Group;
+    private walletPublicKey: string | null = null;
+    private balanceText!: Phaser.GameObjects.Text;
+    private walletText!: Phaser.GameObjects.Text;
+    private connectButton!: Phaser.GameObjects.Text;
+    private enemySpawnEvent!: Phaser.Time.TimerEvent; // Store reference to spawn event
+
+
 
     constructor() {
         super({ key: "GameScene" });
@@ -31,7 +40,7 @@ export default class GameScene extends Phaser.Scene {
             spacing: 1,
         });
 
-        this.load.spritesheet("coin", "/assets/coin1_16x16.png", {
+        this.load.spritesheet("coin", "/assets/coin.png", {
             frameWidth: 16, // Frame size for each coin
             frameHeight: 16,
         });
@@ -50,6 +59,45 @@ export default class GameScene extends Phaser.Scene {
     private maxEnemies = 10; // 🔥 Limit the max enemies at once
 
     create() {
+        // 🔵 Create Background Rectangle for Button
+        const buttonBg = this.add.rectangle(10 + 80, 50 + 10, 180, 30, 0x0000ff)
+            .setOrigin(0.5)
+            .setScrollFactor(0); // Prevents it from moving
+        // 🎮 Wallet Connect Button
+        this.connectButton = this.add.text(10, 50, "🔗 Connect Wallet", {
+            fontSize: "16px",
+            color: "#ffffff",
+            padding: { x: 5, y: 2 }
+        })
+            .setInteractive()
+            .setDepth(1000)  // Ensure it's on top
+            .setScrollFactor(0)
+            .on("pointerdown", async () => {
+                const wallet = await connectWallet();
+                if (wallet) {
+                    console.log("✅ Connected Wallet:", wallet);
+                    this.walletPublicKey = wallet;
+                    this.walletText.setText(`Wallet: ${wallet.substring(0, 6)}...`);
+                    this.fetchBalance();
+                }
+            });
+
+        // 💰 Display Wallet Address
+        this.walletText = this.add.text(10, 70, "Wallet: Not Connected", {
+            fontSize: "14px",
+            color: "#ffffff"
+        }).setScrollFactor(0);
+
+        console.log("✅ Connect Button Created:", this.connectButton);
+
+
+        // 💵 Display Balance
+        this.balanceText = this.add.text(10, 90, "Balance: -- SOL", {
+            fontSize: "14px",
+            color: "#ffffff"
+        }).setScrollFactor(0);
+
+
         // Create the tilemap
         const map = this.make.tilemap({ key: "map" });
         const tileset = map.addTilesetImage("Dungeon", "tiles")!;
@@ -100,10 +148,10 @@ export default class GameScene extends Phaser.Scene {
         // Coin animation
         this.anims.create({
             key: "coin_spin",
-            frames: this.anims.generateFrameNumbers("coin", { start: 0, end: 15 }), 
+            frames: this.anims.generateFrameNumbers("coin", { start: 0, end: 15 }),
             frameRate: 10,
             repeat: -1
-        });        
+        });
 
 
         wallLayer.setCollisionByExclusion([-1]);
@@ -165,16 +213,18 @@ export default class GameScene extends Phaser.Scene {
         this.keys.F.on("down", () => this.shootBullet());
 
         // Automatically spawn enemies at a fixed interval
-        this.time.addEvent({
+        this.enemySpawnEvent = this.time.addEvent({
             delay: this.enemySpawnRate,
             callback: this.spawnEnemy,
             callbackScope: this,
-            loop: true // ✅ Ensures continuous spawning
+            loop: true // 🔥 Ensures continuous spawning
         });
     }
 
 
     update() {
+        if (this.physics.world.isPaused) return; // ✅ Stops updating if game is over
+
         let speed = 200;
         let velocityX = 0;
         let velocityY = 0;
@@ -210,7 +260,7 @@ export default class GameScene extends Phaser.Scene {
 
             if (!enemyHealthBar) return;
 
-            let newHealth = (enemySprite.getData("health") || this.maxEnemyHealth) - 8; // Reduce health
+            let newHealth = (enemySprite.getData("health") || this.maxEnemyHealth) - 80; // Reduce health
             enemySprite.setData("health", newHealth);
 
             if (newHealth <= 0) {
@@ -283,11 +333,16 @@ export default class GameScene extends Phaser.Scene {
         if (this.isInvincible) return; // 🔥 Skip damage if invincible
 
         // 🔥 Reduce player health
-        this.playerHealth -= 1;
+        this.playerHealth -= 10;
         console.log(`Player hit! Health: ${this.playerHealth}`);
 
         // 🔥 Update health bar
         this.updatePlayerHealthBar();
+
+        // Death
+        if (this.playerHealth <= 0) {
+            this.triggerGameOver(); // ✅ Call game over when health runs out
+        }
 
         // ✅ If player health reaches 0, trigger game over
         if (this.playerHealth <= 0) {
@@ -310,6 +365,71 @@ export default class GameScene extends Phaser.Scene {
             }
         });
     }
+
+    triggerGameOver() {
+        console.log("💀 Game Over! Freezing the game...");
+    
+        // 🛑 STOP ALL GAME ACTIONS
+        this.physics.pause();  // 🚫 Freeze physics, stopping movement
+        this.input.keyboard!.enabled = false;  // 🚫 Disable player input
+        this.scene.get('GameScene').events.removeAllListeners();  // 🚫 Remove all events
+        this.time.removeAllEvents();  // 🚫 Stops timers, prevents enemy spawn
+        this.enemies.clear(true, true); // 🚫 Destroy all enemies
+    
+        // 🎮 Show "Game Over" Text
+        this.add.text(400, 250, "GAME OVER", {
+            fontSize: "40px",
+            color: "#ff0000"
+        }).setOrigin(0.5);
+    
+        // ⏳ Wait and then push the score
+        console.log("reached push score");
+        this.pushScoreToSolana();
+    }    
+    
+    async pushScoreToSolana() {
+        console.log("🚀 Attempting to push score to Solana...");
+        
+        if (!this.walletPublicKey) {
+            console.log("❌ No wallet connected!");
+            return;
+        }
+    
+        try {
+            console.log("📡 Calling sendScoreToSolana...");
+            const signature = await sendScoreToSolana(this.walletPublicKey, this.score);
+            
+            if (!signature) {
+                console.error("❌ Transaction failed or did not return a signature!");
+                return;
+            }
+    
+            console.log(`✅ Score pushed to Solana! Transaction: ${signature}`);
+    
+            // 🎮 Show Final Score & Restart Button
+            this.add.text(400, 350, `Final Score: ${this.score}`, {
+                fontSize: "24px",
+                color: "#ffffff"
+            }).setOrigin(0.5);
+    
+            const restartButton = this.add.text(400, 400, "🔄 Restart", {
+                fontSize: "18px",
+                color: "#ffffff",
+                backgroundColor: "#0000ff",
+                padding: { x: 5, y: 2 }
+            })
+            .setInteractive()
+            .setOrigin(0.5)
+            .on("pointerdown", () => {
+                this.scene.restart(); // 🔄 Restart game
+            });
+    
+        } catch (error) {
+            console.error("❌ Failed to push score to Solana:", error);
+        }
+    }
+    
+    
 
     handleEnemyHit(enemy: Phaser.Physics.Arcade.Sprite, attackDirection: string) {
         let enemyHealthBar = this.enemyHealth.get(enemy);
@@ -345,9 +465,9 @@ export default class GameScene extends Phaser.Scene {
 
     applyKnockback(enemy: Phaser.Physics.Arcade.Sprite, attackDirection: string) {
         if (!enemy.active || !enemy.body) return;
-    
+
         let velocityX = 0, velocityY = 0;
-    
+
         switch (attackDirection) {
             case "up":
                 velocityY = -this.knockbackStrength;
@@ -363,10 +483,10 @@ export default class GameScene extends Phaser.Scene {
                 velocityX = this.knockbackStrength;
                 break;
         }
-    
+
         enemy.setData("isKnockedBack", true);
         enemy.setVelocity(velocityX, velocityY);
-    
+
         this.time.delayedCall(this.knockbackDuration, () => {
             if (enemy.active && enemy.body) {
                 enemy.setVelocity(0, 0);
@@ -374,39 +494,39 @@ export default class GameScene extends Phaser.Scene {
             }
         });
     }
-    
+
     // Drop a coin 
     dropCoin(enemy: Phaser.Physics.Arcade.Sprite) {
         if (!enemy.active) return;
-    
+
         let coin = this.coins.create(enemy.x, enemy.y, "coin") as Phaser.Physics.Arcade.Sprite;
         if (!coin) return;
-    
+
         coin.setScale(1);
         coin.setDepth(5);
         coin.play("coin_spin");
-    
+
         this.physics.add.overlap(this.player, coin, (player, coinObj) => {
             this.collectCoin(coinObj as Phaser.Physics.Arcade.Sprite);
         });
-    
+
         // Destroy coin after 10 seconds if not collected**
         this.time.delayedCall(10000, () => {
             if (coin.active) {
                 coin.destroy();
             }
         });
-    
+
         console.log("Coin dropped at:", enemy.x, enemy.y);
     }
-    
+
 
     // Collect a coin
     collectCoin(coin: Phaser.Physics.Arcade.Sprite) {
         coin.destroy();
         this.updateScore(50);
     }
-    
+
 
     handleBulletWallCollision(bullet: Phaser.GameObjects.GameObject) {
         let bulletSprite = bullet as Phaser.Physics.Arcade.Sprite;
@@ -590,6 +710,14 @@ export default class GameScene extends Phaser.Scene {
         this.scoreText.setText(`Score: ${this.score}`); // Update UI
     }
 
+    async fetchBalance() {
+        if (this.walletPublicKey) {
+            const balance = await getWalletBalance(new PublicKey(this.walletPublicKey));
+            this.balanceText.setText(`Balance: ${balance.toFixed(2)} SOL`);
+        }
+    }
+
 
 
 }
+
